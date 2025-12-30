@@ -22,12 +22,31 @@ from services.model_manager import ModelManager
 from services.server_manager import ServerManager
 from services.hardware_detector import HardwareDetector
 from utils.config import ConfigManager
+from contextlib import asynccontextmanager
+
+# Initialize services
+config_manager = ConfigManager()
+model_manager = ModelManager(
+    models_dir=config_manager.get("models_dir"),
+    hf_token=config_manager.get("hf_token")
+)
+server_manager = ServerManager()
+hardware_detector = HardwareDetector()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    yield
+    # Shutdown logic
+    if server_manager.is_running():
+        await server_manager.stop_server()
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Llama.cpp Control Center",
     description="A modern control center for managing llama.cpp models and servers",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS Middleware
@@ -43,13 +62,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize service
-config_manager = ConfigManager()
-model_manager = ModelManager(
-    models_dir=config_manager.get("models_dir"),
-    hf_token=config_manager.get("hf_token")
-)
-server_manager = ServerManager()
-hardware_detector = HardwareDetector()
+# Services already initialized above
 
 # Pydantic models for request/response
 class ModelDownloadRequest(BaseModel):
@@ -59,6 +72,7 @@ class ModelDownloadRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    server_id: str = Field(..., description="ID of the server to chat with")
     message: str
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = None
@@ -170,6 +184,8 @@ async def get_download_status():
 class CreateServerRequest(BaseModel):
     name: str = "My Server"
     model_path: str
+    port: int = 8000
+    host: str = "127.0.0.1"
     n_ctx: Optional[int] = 2048
     n_gpu_layers: Optional[int] = 0
     n_threads: Optional[int] = None
@@ -202,9 +218,25 @@ async def create_server(request: CreateServerRequest):
 async def delete_server(server_id: str):
     """Delete a server configuration"""
     try:
-        if server_manager.delete_server(server_id):
-            return {"success": True, "message": "Server deleted"}
-        raise HTTPException(status_code=404, detail="Server not found")
+        success = server_manager.delete_server(server_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Server not found")
+        return {"success": True, "message": "Server deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/servers/{server_id}")
+async def update_server(server_id: str, request: CreateServerRequest):
+    """Update a server configuration"""
+    try:
+        # We reuse CreateServerRequest as it contains all necessary fields
+        config = request.dict()
+        updated_server = server_manager.update_server_config(server_id, config)
+        
+        if not updated_server:
+            raise HTTPException(status_code=404, detail="Server not found")
+            
+        return {"success": True, "data": updated_server}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -218,11 +250,11 @@ async def start_server_by_id(server_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/server/stop")
-async def stop_server():
-    """Stop the running Llama.cpp server"""
+async def stop_server(server_id: Optional[str] = None):
+    """Stop running Llama.cpp server(s)"""
     try:
-        result = await server_manager.stop_server()
-        return {"success": True, "message": "Server stopped"}
+        result = await server_manager.stop_server(server_id)
+        return {"success": True, "message": "Server processed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -249,14 +281,16 @@ async def get_server_logs(lines: int = 50):
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Send a chat message to the loaded model"""
-    if not server_manager.is_running():
-        raise HTTPException(status_code=400, detail="Server is not running")
+    # Simply check if target server is running
+    if not server_manager.is_running(request.server_id):
+        raise HTTPException(status_code=400, detail=f"Server {request.server_id} is not running")
     
     try:
         if request.stream:
             return StreamingResponse(
                 server_manager.chat_stream(
-                    request.message,
+                    server_id=request.server_id,
+                    message=request.message,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature
                 ),
@@ -264,12 +298,14 @@ async def chat(request: ChatRequest):
             )
         else:
             response = await server_manager.chat(
-                request.message,
+                server_id=request.server_id,
+                message=request.message,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature
             )
             return {"success": True, "data": response}
     except Exception as e:
+        print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/chat")
@@ -322,11 +358,7 @@ async def root():
     return {"message": "llama.cpp Control Center API", "docs": "/docs"}
 
 # Cleanup on shutdown
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup when shutting down"""
-    if server_manager.is_running():
-        await server_manager.stop_server()
+# Cleanup handled by lifespan
 
 if __name__ == "__main__":
     uvicorn.run(

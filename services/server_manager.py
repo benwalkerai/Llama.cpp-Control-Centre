@@ -1,21 +1,23 @@
 """
 Server Manager Service
-Manages llama.cpp server instances using llama-cpp-python
+Manages llama.cpp server instances as external processes
 """
 import os
+import json
+import asyncio
 import uuid
 import threading
+import sys
+import subprocess
+import aiohttp
 from collections import deque
 from typing import Optional, Dict, AsyncGenerator, List
 from datetime import datetime
-from llama_cpp import Llama
 
 class ServerManager:
     def __init__(self, config_dir: str = "utils"):
-        self.llama_instance: Optional[Llama] = None
-        self.is_loaded = False
-        self.active_config = {}
-        self.active_server_id = None
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.active_configs: Dict[str, Dict] = {}
         self.logs = deque(maxlen=1000)
         self.lock = threading.Lock()
         
@@ -37,7 +39,10 @@ class ServerManager:
         try:
             if os.path.exists(self.servers_file):
                 with open(self.servers_file, 'r') as f:
-                    return json.load(f)
+                    try:
+                        return json.load(f)
+                    except json.JSONDecodeError:
+                        return []
         except Exception as e:
             self._log(f"Error loading servers: {e}")
         return []
@@ -61,24 +66,28 @@ class ServerManager:
             "id": server_id,
             "name": config.get("name", "Untitled Server"),
             "model_path": config.get("model_path"),
+            "host": config.get("host", "127.0.0.1"),
+            "port": int(config.get("port", 8000)),
             "created_at": datetime.now().isoformat(),
             "config": {
                 "n_ctx": config.get("n_ctx", 2048),
                 "n_gpu_layers": config.get("n_gpu_layers", 0),
                 "n_threads": config.get("n_threads"),
-                "temperature": config.get("temperature", 0.7),
-                "top_p": config.get("top_p", 0.9),
-                "top_k": config.get("top_k", 40),
-                "repeat_penalty": config.get("repeat_penalty", 1.1)
+                # "temperature", "top_p" etc are runtime params for chat, not server startup usually,
+                # but llama.cpp server might accept some. We generally pass them at chat time.
             }
         }
         self.servers.append(new_server)
         self._save_servers()
-        self._log(f"Created new server config: {new_server['name']}")
+        self._log(f"Created new server config: {new_server['name']} on port {new_server['port']}")
         return new_server
 
     def delete_server(self, server_id: str) -> bool:
         """Delete a server configuration"""
+        # Stop if running
+        if server_id in self.processes:
+            asyncio.create_task(self.stop_server(server_id))
+            
         initial_len = len(self.servers)
         self.servers = [s for s in self.servers if s["id"] != server_id]
         if len(self.servers) < initial_len:
@@ -87,199 +96,242 @@ class ServerManager:
             return True
         return False
 
+    def update_server_config(self, server_id: str, config: Dict) -> Optional[Dict]:
+        """Update an existing server configuration"""
+        for i, server in enumerate(self.servers):
+            if server["id"] == server_id:
+                # Update basic fields
+                server["name"] = config.get("name", server["name"])
+                server["model_path"] = config.get("model_path", server["model_path"])
+                server["port"] = int(config.get("port", server.get("port", 8000)))
+                server["host"] = config.get("host", server.get("host", "127.0.0.1"))
+                
+                # Update inner config
+                if "config" not in server:
+                    server["config"] = {}
+                
+                server["config"]["n_ctx"] = config.get("n_ctx", server["config"].get("n_ctx", 2048))
+                server["config"]["n_gpu_layers"] = config.get("n_gpu_layers", server["config"].get("n_gpu_layers", 0))
+                
+                # Runtime params (optional to store)
+                if "temperature" in config:
+                    server["config"]["temperature"] = config["temperature"]
+                if "top_p" in config:
+                    server["config"]["top_p"] = config["top_p"]
+
+                self.servers[i] = server
+                self._save_servers()
+                self._log(f"Updated server config: {server['id']}")
+                return server
+        return None
+
     async def start_server(self, server_id: str) -> Dict:
-        """Start a specific server configuration by ID"""
+        """Start a specific server configuration by ID as a subprocess"""
         
+        # Check if already running
+        if server_id in self.processes:
+            process = self.processes[server_id]
+            if process.poll() is None:
+                 return {"status": "running", "config": self.active_configs[server_id]}
+            else:
+                # Clean up dead process
+                del self.processes[server_id]
+                del self.active_configs[server_id]
+
         # Find config
         server_config = next((s for s in self.servers if s["id"] == server_id), None)
         if not server_config:
             raise Exception(f"Server configuration not found: {server_id}")
 
-        if self.is_loaded:
-            if self.active_server_id == server_id:
-                return {"status": "loaded", "config": self.active_config}
-            self._log("Stopping existing model before loading new one")
-            await self.stop_server()
-        
         model_path = server_config["model_path"]
+        host = server_config.get("host", "127.0.0.1")
+        port = server_config.get("port", 8000)
         params = server_config["config"]
-        self._log(f"Starting server '{server_config['name']}' with model: {model_path}")
+        
+        self._log(f"Starting server '{server_config['name']}' on {host}:{port}")
         
         try:
-            # Load model in a thread
-            loop = asyncio.get_event_loop()
+            # Build command
+            cmd = [
+                sys.executable, "-m", "llama_cpp.server",
+                "--model", model_path,
+                "--host", host,
+                "--port", str(port),
+                "--n_ctx", str(params.get("n_ctx", 2048)),
+                "--n_gpu_layers", str(params.get("n_gpu_layers", 0))
+            ]
+            if params.get("n_threads"):
+                 cmd.extend(["--n_threads", str(params["n_threads"])])
+
+            # Start process
+            # Use specific creation flags for Windows to allow cleaner termination if needed, 
+            # though simple Popen is often enough.
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True, # For easier log reading if we were to pipe it
+                creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+            )
             
-            def load_model():
-                return Llama(
-                    model_path=model_path,
-                    n_ctx=params.get("n_ctx", 2048),
-                    n_gpu_layers=params.get("n_gpu_layers", 0),
-                    n_threads=params.get("n_threads"),
-                    verbose=True
-                )
+            self.processes[server_id] = process
+            self.active_configs[server_id] = server_config
             
-            self.llama_instance = await loop.run_in_executor(None, load_model)
+            # Wait a moment to ensure it starts (naive check)
+            # In a real app we might poll the health endpoint
+            await asyncio.sleep(2) 
             
-            self.active_config = server_config
-            self.active_server_id = server_id
-            self.is_loaded = True
-            
-            self._log(f"Server '{server_config['name']}' started successfully")
+            if process.poll() is not None:
+                # It died immediately
+                stderr = process.stderr.read() if process.stderr else "Unknown error"
+                raise Exception(f"Server process terminated immediately: {stderr}")
+
+            self._log(f"Server '{server_config['name']}' started (PID: {process.pid})")
             
             return {
-                "status": "loaded",
-                "config": self.active_config
+                "status": "started",
+                "config": server_config
             }
             
         except Exception as e:
             self._log(f"Error starting server: {str(e)}")
-            self.is_loaded = False
-            self.active_server_id = None
+            if server_id in self.processes:
+                del self.processes[server_id]
+            if server_id in self.active_configs:
+                del self.active_configs[server_id]
             raise Exception(f"Failed to start server: {str(e)}")
     
-    async def stop_server(self) -> bool:
-        """Stop/unload the current model"""
-        if not self.is_loaded:
+    async def stop_server(self, server_id: str = None) -> bool:
+        """Stop a server. If server_id is None, stop all."""
+        if server_id is None:
+            # Stop all
+            results = []
+            for sid in list(self.processes.keys()):
+                results.append(await self.stop_server(sid))
+            return all(results)
+            
+        if server_id not in self.processes:
             return False
-        
-        self._log("Unloading model")
+            
+        self._log(f"Stopping server {server_id}...")
         
         try:
-            with self.lock:
-                if self.llama_instance:
-                    self.llama_instance = None
-                
-                self.is_loaded = False
-                self.active_config = {}
-                self.active_server_id = None
+            process = self.processes[server_id]
+            process.terminate()
             
-            self._log("Model unloaded successfully")
+            # Give it a moment, then force kill if needed
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                
+            del self.processes[server_id]
+            if server_id in self.active_configs:
+                del self.active_configs[server_id]
+            
+            self._log(f"Server {server_id} stopped")
             return True
             
         except Exception as e:
             self._log(f"Error unloading model: {str(e)}")
-            raise Exception(f"Failed to unload model: {str(e)}")
+            # Even if error, try to clean up state
+            if server_id in self.processes:
+                del self.processes[server_id]
+            if server_id in self.active_configs:
+                del self.active_configs[server_id]
+            return False
     
     async def chat(
         self,
+        server_id: str,
         message: str,
         max_tokens: int = 512,
-        temperature: Optional[float] = None
+        temperature: float = 0.7
     ) -> Dict:
-        """Send a chat message"""
-        if not self.is_loaded or not self.llama_instance:
-            raise Exception("No model is loaded")
+        """Proxy chat request to the specific server"""
+        if server_id not in self.active_configs:
+             raise Exception("Server is not running")
         
-        # Use runtime temp or config default
-        config_params = self.active_config.get("config", {})
-        temp = temperature if temperature is not None else config_params.get("temperature", 0.7)
+        config = self.active_configs[server_id]
+        host = config.get("host", "127.0.0.1")
+        port = config.get("port", 8000)
+        url = f"http://{host}:{port}/v1/chat/completions"
         
-        self._log(f"Processing chat message (non-streaming)")
+        payload = {
+            "messages": [{"role": "user", "content": message}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False
+        }
         
-        try:
-            loop = asyncio.get_event_loop()
-            
-            def generate():
-                return self.llama_instance.create_chat_completion(
-                    messages=[{"role": "user", "content": message}],
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    top_p=config_params.get("top_p", 0.9),
-                    top_k=config_params.get("top_k", 40),
-                    repeat_penalty=config_params.get("repeat_penalty", 1.1)
-                )
-            
-            response = await loop.run_in_executor(None, generate)
-            
-            return {
-                "message": response["choices"][0]["message"]["content"],
-                "usage": response.get("usage", {}),
-                "model": response.get("model", "unknown")
-            }
-            
-        except Exception as e:
-            self._log(f"Error in chat: {str(e)}")
-            raise Exception(f"Chat failed: {str(e)}")
+        self._log(f"Proxying chat to {url}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise Exception(f"Server returned {response.status}: {text}")
+                
+                return await response.json()
     
     async def chat_stream(
         self,
+        server_id: str,
         message: str,
         max_tokens: int = 512,
-        temperature: Optional[float] = None
+        temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
-        """Send a chat message and stream"""
-        if not self.is_loaded or not self.llama_instance:
-            raise Exception("No model is loaded")
+        """Proxy streaming chat request"""
+        if server_id not in self.active_configs:
+             yield f"data: {json.dumps({'error': 'Server is not running'})}\n\n"
+             return
         
-        config_params = self.active_config.get("config", {})
-        temp = temperature if temperature is not None else config_params.get("temperature", 0.7)
+        config = self.active_configs[server_id]
+        host = config.get("host", "127.0.0.1")
+        port = config.get("port", 8000)
+        url = f"http://{host}:{port}/v1/chat/completions"
         
-        self._log(f"Processing chat message (streaming)")
+        payload = {
+            "messages": [{"role": "user", "content": message}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True
+        }
+        
+        self._log(f"Proxying stream chat to {url}")
         
         try:
-            loop = asyncio.get_event_loop()
-            queue = asyncio.Queue()
-            
-            def generate():
-                try:
-                    stream = self.llama_instance.create_chat_completion(
-                        messages=[{"role": "user", "content": message}],
-                        max_tokens=max_tokens,
-                        temperature=temp,
-                        top_p=config_params.get("top_p", 0.9),
-                        top_k=config_params.get("top_k", 40),
-                        repeat_penalty=config_params.get("repeat_penalty", 1.1),
-                        stream=True
-                    )
-                    
-                    for chunk in stream:
-                        delta = chunk["choices"][0]["delta"]
-                        if "content" in delta:
-                            asyncio.run_coroutine_threadsafe(
-                                queue.put(delta["content"]),
-                                loop
-                            )
-                    
-                    asyncio.run_coroutine_threadsafe(queue.put(None), loop)
-                    
-                except Exception as e:
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(f"Error: {str(e)}"),
-                        loop
-                    )
-                    asyncio.run_coroutine_threadsafe(queue.put(None), loop)
-            
-            thread = threading.Thread(target=generate)
-            thread.start()
-            
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
-            
-            thread.join()
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status != 200:
+                        yield f"data: {json.dumps({'error': f'Server error {response.status}'})}\n\n"
+                        return
+
+                    async for line in response.content:
+                        if line:
+                             yield line.decode('utf-8')
+                             
         except Exception as e:
             self._log(f"Error in streaming chat: {str(e)}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
     
-    def is_running(self) -> bool:
-        return self.is_loaded and self.llama_instance is not None
+    def is_running(self, server_id: str = None) -> bool:
+        if server_id:
+            return server_id in self.processes and self.processes[server_id].poll() is None
+        # Check if ANY are running
+        return any(p.poll() is None for p in self.processes.values())
     
     def get_status(self) -> Dict:
-        """Get current server status"""
+        """Get status of all running servers"""
+        running_servers = []
+        for sid, process in self.processes.items():
+            if process.poll() is None and sid in self.active_configs:
+                running_servers.append(self.active_configs[sid])
+        
         return {
-            "is_running": self.is_running(),
-            "active_server_id": self.active_server_id if self.is_running() else None,
-            "running_config": self.active_config if self.is_running() else {},
-            "uptime": self._get_uptime() if self.is_running() else None
+            "running_count": len(running_servers),
+            "running_servers": running_servers
         }
-    
-    def _get_uptime(self) -> Optional[float]:
-        # Implementation assumes 'loaded_at' is not in persisted config but could be added to active_config at runtime
-        # For now we'll just return None or add loaded_at to active_config when starting
-        return None # Simplified for now as datetime logic needs adaptation to new structure
 
     def get_logs(self, lines: int = 50) -> list:
         return list(self.logs)[-lines:]

@@ -20,10 +20,7 @@
                 <span class="btn-icon">⚙️</span>
                 Settings
             </button>
-            <div class="status-indicator online">
-                <div class="status-dot"></div>
-                <span>Server Online</span>
-            </div>
+            <!-- Server Online indicator removed -->
         </div>
         <header class="header">
             <div class="header-content">
@@ -95,32 +92,7 @@
                     </div>
                 </div>
 
-                <!-- Server Status Card -->
-                <div class="card glass">
-                    <div class="card-header">
-                        <h2 class="card-title">
-                            <span class="card-icon">🖥️</span>
-                            Server Status
-                        </h2>
-                        <button class="btn btn-small btn-ghost" onclick="loadServerStatus()">
-                            <span class="btn-icon">🔄</span>
-                            Refresh
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="server-status-header">
-                            <span class="status-badge status-stopped" id="serverStatus">Stopped</span>
-                        </div>
-                        <div id="serverInfo" class="server-info"></div>
-                        <div class="server-actions">
-                            <button class="btn btn-danger" onclick="stopServer()" id="stopBtn" disabled>
-                                <span class="btn-icon">⏹️</span>
-                                Stop Server
-                            </button>
-                        </div>
-                        <div id="serverLogs" class="server-logs"></div>
-                    </div>
-                </div>
+                <!-- Server Status Card removed -->
             </div>
 
             <!-- Right Column -->
@@ -173,46 +145,7 @@
                     </div>
                 </div>
 
-                <!-- Start Server Card -->
-                <div class="card glass">
-                    <div class="card-header">
-                        <h2 class="card-title">
-                            <span class="card-icon">🚀</span>
-                            Start Server
-                        </h2>
-                    </div>
-                    <div class="card-body">
-                        <div class="form-group">
-                            <label for="selectedModel">Select Model</label>
-                            <select id="selectedModel" class="select">
-                                <option value="">-- Select a model --</option>
-                            </select>
-                        </div>
-                        <div class="form-grid">
-                            <div class="form-group">
-                                <label for="nCtx">Context Size</label>
-                                <input type="number" id="nCtx" class="input" value="2048">
-                            </div>
-                            <div class="form-group">
-                                <label for="nGpuLayers">GPU Layers</label>
-                                <input type="number" id="nGpuLayers" class="input" value="0">
-                            </div>
-                            <div class="form-group">
-                                <label for="nThreads">Threads</label>
-                                <input type="number" id="nThreads" class="input" placeholder="Auto">
-                            </div>
-                            <div class="form-group">
-                                <label for="temperature">Temperature</label>
-                                <input type="number" id="temperature" class="input" value="0.7" step="0.1" min="0"
-                                    max="2">
-                            </div>
-                        </div>
-                        <button class="btn btn-success btn-block" onclick="startServer()">
-                            <span class="btn-icon">▶️</span>
-                            Start Server
-                        </button>
-                    </div>
-                </div>
+                <!-- Start Server Card removed -->
             </div>
         </div>
 
@@ -233,10 +166,11 @@
                     <table class="data-table" id="serversTable">
                         <thead>
                             <tr>
-                                <th>Name</th>
-                                <th>Model</th>
-                                <th style="width: 120px;">Status</th>
-                                <th style="width: 120px;">Actions</th>
+                                <th style="width: 30%">Name</th>
+                                <th style="width: 30%">Model</th>
+                                <th style="width: 10%">Port</th>
+                                <th style="width: 15%">Status</th>
+                                <th style="width: 15%">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="serversList">
@@ -257,7 +191,15 @@
                     <span class="card-icon">💬</span>
                     Chat Interface
                 </h2>
-                <div class="status-badge status-offline" id="chatStatusBadge">Model Not Loaded</div>
+                <div class="dropdown" id="chatModelDropdown">
+                    <div class="status-badge status-offline dropdown-trigger" onclick="toggleChatDropdown()"
+                        id="chatModelBtn">
+                        Model Not Loaded
+                    </div>
+                    <div class="dropdown-content" id="chatModelList">
+                        <div class="dropdown-item">No servers running</div>
+                    </div>
+                </div>
             </div>
             <div class="chat-container" id="chatContainer">
                 <div class="chat-messages" id="chatMessages">
@@ -318,7 +260,7 @@
             <div class="modal-header">
                 <h2 class="card-title">
                     <span class="card-icon">✨</span>
-                    Create New Server
+                    <span id="serverModalTitle">Create New Server</span>
                 </h2>
                 <button class="btn-close" onclick="closeCreateServerModal()">×</button>
             </div>
@@ -334,6 +276,11 @@
                         <select id="serverModel" class="input">
                             <option value="" disabled selected>Select a model...</option>
                         </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="serverPort">Port</label>
+                        <input type="number" id="serverPort" class="input" value="8000">
                     </div>
 
                     <div class="form-group">
@@ -359,9 +306,9 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="closeCreateServerModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="createServer()">
+                <button class="btn btn-primary" id="saveServerBtn" onclick="saveServerConfig()">
                     <span class="btn-icon">✅</span>
-                    Create
+                    <span id="saveServerBtnText">Create</span>
                 </button>
             </div>
         </div>
