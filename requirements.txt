@@ -1,0 +1,27 @@
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# llama.cpp Python bindings
+llama-cpp-python==0.2.27
+
+# HuggingFace integration
+huggingface-hub==0.20.3
+
+# Async support
+aiohttp==3.9.1
+aiofiles==23.2.1
+httpx==0.26.0
+
+# System monitoring
+psutil==5.9.7
+
+# Data handling
+pydantic==2.5.3
+
+# Optional: GPU support (uncomment if you have CUDA)
+# torch==2.1.2
+
+# Optional: For better JSON handling
+orjson==3.9.12

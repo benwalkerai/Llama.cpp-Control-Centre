@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🦙 Llama.cpp Control Centre</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <!-- Background Effects -->
+    <div class="bg-gradient"></div>
+    <div class="bg-grid"></div>
+
+    <div class="container">
+        <!-- Header -->
+        <div class="header-controls">
+            <button class="btn btn-ghost" onclick="openSettings()">
+                <span class="btn-icon">⚙️</span>
+                Settings
+            </button>
+            <div class="status-indicator online">
+                <div class="status-dot"></div>
+                <span>Server Online</span>
+            </div>
+        </div>
+        <header class="header">
+            <div class="header-content">
+                <h1 class="logo">
+                    <span class="logo-icon">🦙</span>
+                    <span class="logo-text">Llama.cpp Control Centre</span>
+                </h1>
+                <p class="subtitle">Modern FastAPI interface for managing llama.cpp models and servers</p>
+            </div>
+            <div class="header-status">
+                <div class="status-badge" id="overallStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">System Ready</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Alert Container -->
+        <div id="alerts"></div>
+
+        <!-- Main Grid Layout -->
+        <div class="main-grid">
+            <!-- Left Column -->
+            <div class="grid-column">
+                <!-- Hardware Status Card -->
+                <div class="card glass">
+                    <div class="card-header">
+                        <h2 class="card-title">
+                            <span class="card-icon">📊</span>
+                            Hardware Status
+                        </h2>
+                        <button class="btn btn-small btn-ghost" onclick="loadHardwareInfo()">
+                            <span class="btn-icon">🔄</span>
+                            Refresh
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="hardware-grid">
+                            <div class="info-box">
+                                <div class="info-icon">⚙️</div>
+                                <div class="info-content">
+                                    <div class="info-label">CPU Cores</div>
+                                    <div class="info-value" id="cpuCores">-</div>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <div class="info-icon">💾</div>
+                                <div class="info-content">
+                                    <div class="info-label">RAM Available</div>
+                                    <div class="info-value" id="ramAvailable">-</div>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <div class="info-icon">🎮</div>
+                                <div class="info-content">
+                                    <div class="info-label">GPU</div>
+                                    <div class="info-value" id="gpuStatus">-</div>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <div class="info-icon">🔥</div>
+                                <div class="info-content">
+                                    <div class="info-label">VRAM</div>
+                                    <div class="info-value" id="vram">-</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="recommendations" class="recommendations"></div>
+                    </div>
+                </div>
+
+                <!-- Server Status Card -->
+                <div class="card glass">
+                    <div class="card-header">
+                        <h2 class="card-title">
+                            <span class="card-icon">🖥️</span>
+                            Server Status
+                        </h2>
+                        <button class="btn btn-small btn-ghost" onclick="loadServerStatus()">
+                            <span class="btn-icon">🔄</span>
+                            Refresh
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="server-status-header">
+                            <span class="status-badge status-stopped" id="serverStatus">Stopped</span>
+                        </div>
+                        <div id="serverInfo" class="server-info"></div>
+                        <div class="server-actions">
+                            <button class="btn btn-danger" onclick="stopServer()" id="stopBtn" disabled>
+                                <span class="btn-icon">⏹️</span>
+                                Stop Server
+                            </button>
+                        </div>
+                        <div id="serverLogs" class="server-logs"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column -->
+            <div class="grid-column">
+                <!-- Model Management Card -->
+                <div class="card glass">
+                    <div class="card-header">
+                        <h2 class="card-title">
+                            <span class="card-icon">📦</span>
+                            Model Management
+                        </h2>
+                        <button class="btn btn-small btn-ghost" onclick="loadModels()">
+                            <span class="btn-icon">🔄</span>
+                            Refresh
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <!-- Download Section -->
+                        <div class="section">
+                            <h3 class="section-title">Download Model</h3>
+                            <div class="form-group">
+                                <label for="repoId">HuggingFace Repo ID</label>
+                                <input type="text" id="repoId" class="input"
+                                    placeholder="TheBloke/Llama-2-7B-Chat-GGUF">
+                            </div>
+                            <div class="form-group">
+                                <label for="modelFilename">Filename</label>
+                                <input type="text" id="modelFilename" class="input"
+                                    placeholder="llama-2-7b-chat.Q4_K_M.gguf">
+                            </div>
+                            <button class="btn btn-primary btn-block" onclick="downloadModel()">
+                                <span class="btn-icon">⬇️</span>
+                                Download Model
+                            </button>
+                            <div id="downloadProgress" class="progress-container" style="display: none;">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="downloadProgressBar"></div>
+                                </div>
+                                <div class="progress-text" id="downloadProgressText">Downloading...</div>
+                            </div>
+                        </div>
+
+                        <!-- Models List -->
+                        <div class="section">
+                            <h3 class="section-title">Local Models</h3>
+                            <div id="modelsList" class="models-list">
+                                <div class="empty-state">No models found. Download a model to get started.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Start Server Card -->
+                <div class="card glass">
+                    <div class="card-header">
+                        <h2 class="card-title">
+                            <span class="card-icon">🚀</span>
+                            Start Server
+                        </h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="selectedModel">Select Model</label>
+                            <select id="selectedModel" class="select">
+                                <option value="">-- Select a model --</option>
+                            </select>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="nCtx">Context Size</label>
+                                <input type="number" id="nCtx" class="input" value="2048">
+                            </div>
+                            <div class="form-group">
+                                <label for="nGpuLayers">GPU Layers</label>
+                                <input type="number" id="nGpuLayers" class="input" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="nThreads">Threads</label>
+                                <input type="number" id="nThreads" class="input" placeholder="Auto">
+                            </div>
+                            <div class="form-group">
+                                <label for="temperature">Temperature</label>
+                                <input type="number" id="temperature" class="input" value="0.7" step="0.1" min="0"
+                                    max="2">
+                            </div>
+                        </div>
+                        <button class="btn btn-success btn-block" onclick="startServer()">
+                            <span class="btn-icon">▶️</span>
+                            Start Server
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Saved Servers Section -->
+        <div class="card glass" style="margin-bottom: 1.5rem;">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="card-icon">🖥️</span>
+                    Server Status
+                </h2>
+                <button class="btn btn-primary" onclick="openCreateServerModal()">
+                    <span class="btn-icon">➕</span>
+                    Create New Server
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="table-container">
+                    <table class="data-table" id="serversTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Model</th>
+                                <th style="width: 120px;">Status</th>
+                                <th style="width: 120px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="serversList">
+                            <!-- Servers will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="noServersMessage" class="empty-state" style="display: none;">
+                    No servers configured. Create one to get started.
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Section (Full Width) -->
+        <div class="card glass chat-card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="card-icon">💬</span>
+                    Chat Interface
+                </h2>
+                <div class="status-badge status-offline" id="chatStatusBadge">Model Not Loaded</div>
+            </div>
+            <div class="chat-container" id="chatContainer">
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message system-message">
+                        <div class="message-content">
+                            Start a server to begin chatting.
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" class="chat-input" id="chatInput" placeholder="Type your message..." disabled>
+                    <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()" disabled>
+                        <span class="btn-icon">➤</span>
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal" onclick="closeSettingsOnOverlay(event)">
+        <div class="modal-window glass">
+            <div class="modal-header">
+                <h2 class="card-title">
+                    <span class="card-icon">⚙️</span>
+                    Settings
+                </h2>
+                <button class="btn-close" onclick="closeSettings()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label for="modelsDir">Models Directory (Absolute Path)</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="modelsDir" class="input" placeholder="D:\models">
+                        </div>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label for="hfToken">HuggingFace API Token (Optional)</label>
+                        <input type="password" id="hfToken" class="input" placeholder="hf_...">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSettings()">
+                    <span class="btn-icon">💾</span>
+                    Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Server Modal -->
+    <div class="modal-overlay" id="createServerModal" onclick="closeCreateServerOnOverlay(event)">
+        <div class="modal-window glass">
+            <div class="modal-header">
+                <h2 class="card-title">
+                    <span class="card-icon">✨</span>
+                    Create New Server
+                </h2>
+                <button class="btn-close" onclick="closeCreateServerModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label for="serverName">Server Name</label>
+                        <input type="text" id="serverName" class="input" placeholder="My Llama Server">
+                    </div>
+
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label for="serverModel">Model</label>
+                        <select id="serverModel" class="input">
+                            <option value="" disabled selected>Select a model...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="serverCtx">Context Size (n_ctx)</label>
+                        <input type="number" id="serverCtx" class="input" value="2048" step="128">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="serverGpu">GPU Layers (n_gpu_layers)</label>
+                        <input type="number" id="serverGpu" class="input" value="0">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="serverTemp">Temperature</label>
+                        <input type="number" id="serverTemp" class="input" value="0.7" step="0.1" min="0" max="2">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="serverTopP">Top P</label>
+                        <input type="number" id="serverTopP" class="input" value="0.9" step="0.05" min="0" max="1">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeCreateServerModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createServer()">
+                    <span class="btn-icon">✅</span>
+                    Create
+                </button>
+            </div>
+        </div>
+    </div>
+    </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
