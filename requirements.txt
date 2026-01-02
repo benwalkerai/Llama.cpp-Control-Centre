@@ -2,9 +2,12 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
+sse-starlette>=1.6.1
 
 # llama.cpp Python bindings
-llama-cpp-python==0.2.27
+llama-cpp-python[server]==0.2.27
+starlette-context==0.3.6
+pydantic-settings==2.12.0
 
 # HuggingFace integration
 huggingface-hub==0.20.3

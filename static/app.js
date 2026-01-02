@@ -3,7 +3,11 @@
 // ===== Global State =====
 let chatHistory = [];
 let isServerRunning = false;
+let currentChatServerId = null;
+let availableModels = [];
 let wsConnection = null;
+let activeConsoleServerId = null;
+let consoleInterval = null;
 
 // ===== Utility Functions =====
 function showAlert(message, type = 'info') {
@@ -42,6 +46,18 @@ async function apiCall(endpoint, options = {}) {
         showAlert(error.message, 'error');
         throw error;
     }
+}
+
+function formatTime(seconds) {
+    if (!seconds || seconds < 0 || seconds === Infinity) return '--:--';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+
+    if (h > 0) {
+        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 // ===== Hardware Functions =====
@@ -112,28 +128,6 @@ async function loadRecommendations() {
 }
 
 // ===== Server Functions =====
-async function loadServerStatus() {
-    try {
-        const result = await apiCall('/server/status');
-        const status = result.data;
-
-        isServerRunning = status.is_running;
-
-        // Update Chat Model Dropdown
-        updateChatModelStatus(status);
-
-        // Elements removed from UI, so we only update state
-        // and potentially chat interface state
-        const sendBtn = document.getElementById('sendBtn');
-        if (sendBtn) {
-            sendBtn.disabled = !isServerRunning;
-        }
-
-    } catch (error) {
-        console.error('Failed to load server status:', error);
-    }
-}
-
 async function loadServerLogs() {
     try {
         const result = await apiCall('/server/logs?lines=20');
@@ -172,7 +166,7 @@ async function loadModels() {
             <div class="model-item">
                 <div class="model-info">
                     <div class="model-name">${model.name}</div>
-                    <div class="model-meta">${(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB • Modified: ${new Date(model.modified * 1000).toLocaleDateString()}</div>
+                    <div class="model-meta">${(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB • Modified: ${new Date(model.modified).toLocaleDateString()}</div>
                 </div>
                 <div class="model-actions">
                     <button class="btn btn-small btn-danger" onclick="deleteModel('${model.name}')" title="Delete Model">🗑️</button>
@@ -185,22 +179,64 @@ async function loadModels() {
     }
 }
 
-async function handleDownload(event) {
-    event.preventDefault();
+async function downloadModel() {
+    console.log('Download button clicked');
     const repoId = document.getElementById('repoId').value.trim();
-    const filename = document.getElementById('filename').value.trim();
+    const filename = document.getElementById('modelFilename').value.trim();
 
-    if (!repoId || !filename) {
-        showAlert('Please fill in all fields', 'error');
+    console.log(`Repo: ${repoId}, Filename: ${filename}`);
+
+    let finalRepoId = repoId;
+    let finalFilename = filename;
+
+    // Support for full Hugging Face URLs
+    // Example: https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/blob/main/llama-2-7b-chat.Q4_K_M.gguf
+    if (repoId.includes('huggingface.co/')) {
+        try {
+            const url = new URL(repoId);
+            const pathParts = url.pathname.split('/').filter(p => p);
+
+            // Expected path: /repo_owner/repo_name/blob/branch/filename
+            if (pathParts.length >= 2) {
+                finalRepoId = `${pathParts[0]}/${pathParts[1]}`;
+
+                // If filename is in the URL (blob/main/filename)
+                if (pathParts.includes('blob') || pathParts.includes('resolve')) {
+                    const typeIdx = pathParts.indexOf('blob') !== -1 ? pathParts.indexOf('blob') : pathParts.indexOf('resolve');
+                    if (pathParts.length > typeIdx + 2) {
+                        finalFilename = pathParts.slice(typeIdx + 2).join('/');
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('URL parsing failed:', e);
+        }
+    }
+
+    if (!finalRepoId || !finalFilename) {
+        console.warn('Missing fields');
+        showAlert('Please fill in all fields (or paste a valid HF URL)', 'error');
         return;
     }
 
     try {
-        showAlert('Download started...', 'info');
-        await apiCall('/models/download', {
+        console.log('Starting download request...');
+        // Show progress container
+        const progressContainer = document.getElementById('downloadProgress');
+        const progressBar = document.getElementById('downloadProgressBar');
+        const progressText = document.getElementById('downloadProgressText');
+        const progressStats = document.getElementById('downloadStats');
+
+        progressContainer.style.display = 'block';
+        progressBar.style.width = '0%';
+        progressText.textContent = 'Starting download...';
+        progressStats.innerHTML = '';
+
+        const response = await apiCall('/models/download', {
             method: 'POST',
-            body: JSON.stringify({ repo_id: repoId, filename: filename })
+            body: JSON.stringify({ repo_id: finalRepoId, filename: finalFilename })
         });
+        console.log('Download request sent', response);
 
         // Start polling status
         const pollInterval = setInterval(async () => {
@@ -210,11 +246,42 @@ async function handleDownload(event) {
             if (!status.is_downloading) {
                 clearInterval(pollInterval);
                 loadModels();
-                if (status.current_file) {
+
+                if (status.last_error) {
+                    progressBar.style.width = '0%';
+                    progressText.textContent = `Error: ${status.last_error}`;
+                    showAlert(`Download failed: ${status.last_error}`, 'error');
+                } else if (status.current_file) {
+                    progressBar.style.width = '100%';
+                    progressText.textContent = 'Download completed!';
                     showAlert('Download completed!', 'success');
+                    setTimeout(() => {
+                        progressContainer.style.display = 'none';
+                    }, 5000);
+                }
+            } else {
+                // Update UI
+                progressBar.style.width = `${status.progress}%`;
+
+                // Main status text
+                progressText.textContent = `Downloading ${status.current_file}... ${status.progress}%`;
+
+                // Detailed stats: X MB / Y MB • Z MB/s • ETA: 5s
+                if (status.total_size_mb > 0) {
+                    const sizeStr = `${status.current_size_mb.toFixed(1)} / ${status.total_size_mb.toFixed(1)} MB`;
+                    const speedStr = `${status.speed_mb_s.toFixed(1)} MB/s`;
+                    const etaStr = status.eta_seconds ? `ETA: ${formatTime(status.eta_seconds)}` : 'Calculating...';
+
+                    progressStats.innerHTML = `
+                        <span>${sizeStr}</span>
+                        <span>${speedStr} • ${etaStr}</span>
+                    `;
+                } else {
+                    progressStats.innerHTML = `<span>Preparing...</span>`;
                 }
             }
-        }, 1000);
+        }, 500);
+
 
     } catch (error) {
         showAlert(error.message, 'error');
@@ -243,7 +310,7 @@ async function deleteModel(modelName) {
 let editingServerId = null;
 
 // Open/Close Create Server Modal
-function openCreateServerModal(isEdit = false, serverId = null) {
+async function openCreateServerModal(isEdit = false, serverId = null) {
     const modalTitle = document.getElementById('serverModalTitle');
     const saveBtnText = document.getElementById('saveServerBtnText');
 
@@ -252,26 +319,43 @@ function openCreateServerModal(isEdit = false, serverId = null) {
         modalTitle.textContent = 'Edit Server';
         saveBtnText.textContent = 'Update';
 
-        // Find server data (should ideally keep map of servers or fetch)
-        // For now, fetch all servers to find it (or use loaded list if we had global one)
-        // Since loadServers runs often, we can reuse data if we store it globally.
-        // Let's rely on apiCall for freshness
-        apiCall('/servers').then(res => {
-            const server = res.data.find(s => s.id === serverId);
+        try {
+            const res = await apiCall(`/servers/${serverId}`);
+            const server = res.data;
             if (server) {
                 document.getElementById('serverName').value = server.name;
-                document.getElementById('serverModel').value = server.model_path;
-                document.getElementById('serverPort').value = server.port || 8000;
+
+                // Improved path matching for the dropdown
+                const modelSelect = document.getElementById('serverModel');
+                const options = Array.from(modelSelect.options);
+                const matchingOption = options.find(o => o.value === server.model_path);
+                if (matchingOption) {
+                    modelSelect.value = server.model_path;
+                } else {
+                    // Try to match by filename if absolute path fails
+                    const filename = server.model_path.split(/[/\\]/).pop();
+                    const fuzzyMatch = options.find(o => o.value.endsWith(filename));
+                    if (fuzzyMatch) {
+                        modelSelect.value = fuzzyMatch.value;
+                    }
+                }
+
+                document.getElementById('serverPort').value = server.port || 8001;
 
                 const config = server.config || {};
                 document.getElementById('serverCtx').value = config.n_ctx || 2048;
                 document.getElementById('serverGpu').value = config.n_gpu_layers || 0;
+                document.getElementById('serverThreads').value = config.n_threads || '';
                 document.getElementById('serverTemp').value = config.temperature || 0.7;
                 document.getElementById('serverTopP').value = config.top_p || 0.9;
+                document.getElementById('serverTopK').value = config.top_k || 40;
+                document.getElementById('serverRepeat').value = config.repeat_penalty || 1.1;
 
                 document.getElementById('createServerModal').classList.add('active');
             }
-        });
+        } catch (error) {
+            showAlert('Failed to load server configuration', 'error');
+        }
 
     } else {
         editingServerId = null;
@@ -280,12 +364,15 @@ function openCreateServerModal(isEdit = false, serverId = null) {
 
         // Clear fields
         document.getElementById('serverName').value = '';
-        document.getElementById('serverModel').value = ''; // Reset select
-        document.getElementById('serverPort').value = '8000';
+        document.getElementById('serverModel').value = '';
+        document.getElementById('serverPort').value = '8001';
         document.getElementById('serverCtx').value = '2048';
+        document.getElementById('serverThreads').value = '';
         document.getElementById('serverGpu').value = '0';
         document.getElementById('serverTemp').value = '0.7';
         document.getElementById('serverTopP').value = '0.9';
+        document.getElementById('serverTopK').value = '40';
+        document.getElementById('serverRepeat').value = '1.1';
 
         document.getElementById('createServerModal').classList.add('active');
     }
@@ -323,28 +410,37 @@ async function loadServers() {
         // Get running status to update UI
         const statusResult = await apiCall('/server/status');
         const runningServers = statusResult.data.running_servers || [];
-        const runningIds = new Set(runningServers.map(s => s.id));
 
         list.innerHTML = servers.map(server => {
-            const isRunning = runningIds.has(server.id);
+            const runningServer = runningServers.find(s => s.id === server.id);
+            const isRunning = !!runningServer;
+            const isReady = runningServer ? runningServer.is_ready : false;
             const modelName = server.model_path.split(/[/\\]/).pop();
+
+            let statusBadge = '';
+            if (isRunning) {
+                if (isReady) {
+                    statusBadge = '<span class="status-badge status-online">Ready</span>';
+                } else {
+                    statusBadge = '<span class="status-badge status-warning">Initializing...</span>';
+                }
+            } else {
+                statusBadge = '<span class="status-badge status-stopped">Stopped</span>';
+            }
 
             return `
             <tr>
                 <td><strong>${server.name}</strong></td>
                 <td><span title="${server.model_path}">${modelName}</span></td>
                 <td>${server.port || 8000}</td>
-                <td>
-                    ${isRunning
-                    ? '<span class="status-badge status-online">Running</span>'
-                    : '<span class="status-badge status-stopped">Stopped</span>'}
-                </td>
+                <td>${statusBadge}</td>
                 <td>
                     <div class="model-actions">
                         ${isRunning
                     ? `<button class="btn btn-small btn-danger" onclick="stopServer('${server.id}')">⏹️ Stop</button>`
                     : `<button class="btn btn-small btn-success" onclick="startServer('${server.id}')">▶️ Start</button>`
                 }
+                        <button class="btn btn-small btn-ghost" onclick="openConsoleModal('${server.id}', '${server.name}')" title="View Console">📟</button>
                         <button class="btn btn-small btn-ghost" onclick="openCreateServerModal(true, '${server.id}')" ${isRunning ? 'disabled' : ''}>✏️</button>
                         <button class="btn btn-small btn-ghost" onclick="deleteServer('${server.id}')" ${isRunning ? 'disabled' : ''}>🗑️</button>
                     </div>
@@ -373,14 +469,23 @@ async function saveServerConfig() {
         return;
     }
 
+    if (port === 8000) {
+        if (!confirm('Warning: Port 8000 is used by this Control Centre. Your model server might conflict or fail to start. Continue anyway?')) {
+            return;
+        }
+    }
+
     const payload = {
         name,
         model_path: modelPath,
         port,
         n_ctx: nCtx,
         n_gpu_layers: nGpu,
-        temperature: temp,
-        top_p: topP
+        n_threads: parseInt(document.getElementById('serverThreads').value) || null,
+        temperature: parseFloat(document.getElementById('serverTemp').value),
+        top_p: parseFloat(document.getElementById('serverTopP').value),
+        top_k: parseInt(document.getElementById('serverTopK').value),
+        repeat_penalty: parseFloat(document.getElementById('serverRepeat').value)
     };
 
     try {
@@ -527,8 +632,13 @@ function updateChatModelStatus(runningServers) {
         const port = selected.port || 8000;
 
         // Update Button
-        btn.textContent = `${serverName} (${port})`;
-        btn.className = 'status-badge status-online dropdown-trigger';
+        if (selected.is_ready) {
+            btn.textContent = `${serverName} (${port})`;
+            btn.className = 'status-badge status-online dropdown-trigger';
+        } else {
+            btn.textContent = `${serverName} (Loading...)`;
+            btn.className = 'status-badge status-warning dropdown-trigger';
+        }
 
         // Build List
         list.innerHTML = runningServers.map(s => {
@@ -536,16 +646,18 @@ function updateChatModelStatus(runningServers) {
             const sModel = (s.model_path || "").split(/[/\\]/).pop();
             const sPort = s.port;
             const isActive = s.id === currentChatServerId;
+            const isReady = s.is_ready;
 
             return `
             <div class="dropdown-item ${isActive ? 'active' : ''}" onclick="selectChatServer('${s.id}')">
-                <span>${isActive ? '🟢' : '⚪'}</span>
+                <span>${isReady ? '🟢' : '⏳'}</span>
                 <div style="display: flex; flex-direction: column;">
-                    <span style="font-weight: 600;">${sName}</span>
+                    <span style="font-weight: 600;">${sName} ${isReady ? '' : '(Loading...)'}</span>
                     <span style="font-size: 0.8em; opacity: 0.8;">:${sPort} - ${sModel}</span>
                 </div>
             </div>`;
         }).join('') + `
+
             <div class="dropdown-item" onclick="stopServer('${selected.id}')" style="color: var(--danger); border-top: 1px solid var(--border); margin-top: 0.5rem;">
                 <span>⏹️</span>
                 Stop Current
@@ -564,6 +676,16 @@ async function sendMessage() {
     const input = document.getElementById('chatInput');
     const message = input.value.trim();
     if (!message || !currentChatServerId) return;
+
+    // Check if server is ready
+    const statusRes = await apiCall('/server/status');
+    const runningServers = statusRes.data.running_servers || [];
+    const activeServer = runningServers.find(s => s.id === currentChatServerId);
+
+    if (!activeServer || !activeServer.is_ready) {
+        showAlert('Model is still initializing. Please wait...', 'warning');
+        return;
+    }
 
     // Add User Message
     addChatMessage('user', message);

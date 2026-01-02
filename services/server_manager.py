@@ -18,6 +18,7 @@ class ServerManager:
     def __init__(self, config_dir: str = "utils"):
         self.processes: Dict[str, subprocess.Popen] = {}
         self.active_configs: Dict[str, Dict] = {}
+        self.per_server_logs: Dict[str, deque] = {}
         self.logs = deque(maxlen=1000)
         self.lock = threading.Lock()
         
@@ -73,8 +74,10 @@ class ServerManager:
                 "n_ctx": config.get("n_ctx", 2048),
                 "n_gpu_layers": config.get("n_gpu_layers", 0),
                 "n_threads": config.get("n_threads"),
-                # "temperature", "top_p" etc are runtime params for chat, not server startup usually,
-                # but llama.cpp server might accept some. We generally pass them at chat time.
+                "temperature": config.get("temperature", 0.7),
+                "top_p": config.get("top_p", 0.9),
+                "top_k": config.get("top_k", 40),
+                "repeat_penalty": config.get("repeat_penalty", 1.1),
             }
         }
         self.servers.append(new_server)
@@ -112,12 +115,13 @@ class ServerManager:
                 
                 server["config"]["n_ctx"] = config.get("n_ctx", server["config"].get("n_ctx", 2048))
                 server["config"]["n_gpu_layers"] = config.get("n_gpu_layers", server["config"].get("n_gpu_layers", 0))
+                server["config"]["n_threads"] = config.get("n_threads", server["config"].get("n_threads"))
                 
-                # Runtime params (optional to store)
-                if "temperature" in config:
-                    server["config"]["temperature"] = config["temperature"]
-                if "top_p" in config:
-                    server["config"]["top_p"] = config["top_p"]
+                # Runtime/Model params
+                server["config"]["temperature"] = config.get("temperature", server["config"].get("temperature", 0.7))
+                server["config"]["top_p"] = config.get("top_p", server["config"].get("top_p", 0.9))
+                server["config"]["top_k"] = config.get("top_k", server["config"].get("top_k", 40))
+                server["config"]["repeat_penalty"] = config.get("repeat_penalty", server["config"].get("repeat_penalty", 1.1))
 
                 self.servers[i] = server
                 self._save_servers()
@@ -148,6 +152,14 @@ class ServerManager:
         port = server_config.get("port", 8000)
         params = server_config["config"]
         
+        # Verify model exists
+        if not os.path.exists(model_path):
+            raise Exception(f"Model file not found: {model_path}. Please edit the server and select an existing model from the dropdown.")
+        
+        # Prevent port conflict with Control Centre
+        if port == 8000:
+            raise Exception("Port 8000 is reserved for the Control Centre. Please edit the server and choose a different port (e.g., 8001).")
+
         self._log(f"Starting server '{server_config['name']}' on {host}:{port}")
         
         try:
@@ -164,18 +176,29 @@ class ServerManager:
                  cmd.extend(["--n_threads", str(params["n_threads"])])
 
             # Start process
-            # Use specific creation flags for Windows to allow cleaner termination if needed, 
-            # though simple Popen is often enough.
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True, # For easier log reading if we were to pipe it
-                creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                stderr=subprocess.STDOUT, 
+                text=True,
+                bufsize=1 # Line buffered
             )
             
             self.processes[server_id] = process
             self.active_configs[server_id] = server_config
+            self.per_server_logs[server_id] = deque(maxlen=1000)
+
+            # Start background thread to read logs
+            def log_reader(proc, sid):
+                try:
+                    for line in iter(proc.stdout.readline, ""):
+                        if sid not in self.per_server_logs:
+                            break
+                        self.per_server_logs[sid].append(line.strip())
+                except:
+                    pass
+
+            threading.Thread(target=log_reader, args=(process, server_id), daemon=True).start()
             
             # Wait a moment to ensure it starts (naive check)
             # In a real app we might poll the health endpoint
@@ -183,8 +206,10 @@ class ServerManager:
             
             if process.poll() is not None:
                 # It died immediately
-                stderr = process.stderr.read() if process.stderr else "Unknown error"
-                raise Exception(f"Server process terminated immediately: {stderr}")
+                error_msg = "Unknown error"
+                if process.stdout:
+                    error_msg = process.stdout.read()
+                raise Exception(f"Server process terminated immediately: {error_msg}")
 
             self._log(f"Server '{server_config['name']}' started (PID: {process.pid})")
             
@@ -321,18 +346,71 @@ class ServerManager:
         # Check if ANY are running
         return any(p.poll() is None for p in self.processes.values())
     
-    def get_status(self) -> Dict:
-        """Get status of all running servers"""
+    async def get_status(self) -> Dict:
+        """Get status of all running servers with health check"""
         running_servers = []
-        for sid, process in self.processes.items():
-            if process.poll() is None and sid in self.active_configs:
-                running_servers.append(self.active_configs[sid])
+        tasks = []
         
+        for sid, process in list(self.processes.items()):
+            if process.poll() is None and sid in self.active_configs:
+                config = self.active_configs[sid].copy()
+                tasks.append(self._check_health(sid, config))
+            elif process.poll() is not None:
+                # Clean up finished/crashed processes
+                if sid in self.processes: del self.processes[sid]
+                if sid in self.active_configs: del self.active_configs[sid]
+        
+        if tasks:
+            running_servers = await asyncio.gather(*tasks)
+            
         return {
             "running_count": len(running_servers),
             "running_servers": running_servers
         }
 
+    async def _check_health(self, sid: str, config: Dict) -> Dict:
+        """Probe the server to see if it's ready for inference"""
+        host = config.get("host", "127.0.0.1")
+        port = config.get("port", 8000)
+        
+        config["is_ready"] = False
+        
+        # Standard endpoints to check
+        endpoints = ["/health", "/v1/models", "/"]
+        
+        try:
+            # Short timeout for local checks
+            timeout = aiohttp.ClientTimeout(total=0.5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Try endpoints until one works
+                for ep in endpoints:
+                    try:
+                        async with session.get(f"http://{host}:{port}{ep}") as resp:
+                            if resp.status == 200:
+                                config["is_ready"] = True
+                                break
+                    except:
+                        continue
+        except:
+            pass
+            
+        return config
+
     def get_logs(self, lines: int = 50) -> list:
         return list(self.logs)[-lines:]
+
+    def get_server_logs(self, server_id: str, lines: int = 100) -> list:
+        """Get logs for a specific server"""
+        if server_id in self.per_server_logs:
+            return list(self.per_server_logs[server_id])[-lines:]
+        return []
+
+    def _remove_server_state(self, server_id: str):
+        """Helper to clean up all tracked state for a server"""
+        if server_id in self.processes:
+            del self.processes[server_id]
+        if server_id in self.active_configs:
+            del self.active_configs[server_id]
+        if server_id in self.per_server_logs:
+            del self.per_server_logs[server_id]
 

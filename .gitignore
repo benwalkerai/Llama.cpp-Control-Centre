@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Local configuration and state
+config.json
+utils/servers.json
+*.bak
+dump_css.py
+get_old_css.py
+original_style.css

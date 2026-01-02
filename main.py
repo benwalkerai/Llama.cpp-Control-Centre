@@ -38,8 +38,9 @@ async def lifespan(app: FastAPI):
     # Startup logic
     yield
     # Shutdown logic
-    if server_manager.is_running():
-        await server_manager.stop_server()
+    print("[Shutdown] Stopping all model servers...")
+    await server_manager.stop_server() # stop_server(None) stops all
+    print("[Shutdown] Cleanup complete.")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -156,10 +157,11 @@ async def list_models():
     
 @app.post("/api/models/download")
 async def download_model(request: ModelDownloadRequest):
-    """Download a mdoel from HuggingFace"""
+    """Download a model from HuggingFace in the background"""
     try:
-        result = await model_manager.download_model(request.repo_id, request.filename)
-        return {"success": True, "data": result}
+        # Start download in background
+        asyncio.create_task(model_manager.download_model(request.repo_id, request.filename))
+        return {"success": True, "message": "Download started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -202,6 +204,18 @@ async def list_servers():
     try:
         servers = server_manager.get_servers()
         return {"success": True, "data": servers}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/servers/{server_id}")
+async def get_server(server_id: str):
+    """Get a single server configuration"""
+    try:
+        servers = server_manager.get_servers()
+        server = next((s for s in servers if s["id"] == server_id), None)
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        return {"success": True, "data": server}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -262,7 +276,7 @@ async def stop_server(server_id: Optional[str] = None):
 async def get_server_status():
     """Get current server status"""
     try:
-        status = server_manager.get_status()
+        status = await server_manager.get_status()
         return {"success": True, "data": status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -272,6 +286,15 @@ async def get_server_logs(lines: int = 50):
     """Get recent server logs"""
     try:
         logs = server_manager.get_logs(lines)
+        return {"success": True, "data": logs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/server/logs/{server_id}")
+async def get_specific_server_logs(server_id: str, lines: int = 100):
+    """Get logs for a specific server instance"""
+    try:
+        logs = server_manager.get_server_logs(server_id, lines)
         return {"success": True, "data": logs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
