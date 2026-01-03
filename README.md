@@ -2,7 +2,7 @@
 
 A modern FastAPI-based web interface for managing llama.cpp models and servers with intelligent hardware optimization.
 
-![Llama.cpp Control Centre UI](screenshots\screen1.png)
+![Llama.cpp Control Centre UI](screenshots/screen1.png)
 
 ## Features
 
