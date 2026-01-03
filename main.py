@@ -15,6 +15,7 @@ from typing import Optional, List, Dict, Any
 import uvicorn
 import asyncio
 import json
+import traceback
 from pathlib import Path
 
 # Internal Module Imports
@@ -80,9 +81,13 @@ class ChatRequest(BaseModel):
     stream: Optional[bool] = True
 
 class PerformanceTestRequest(BaseModel):
-    model_path: str
-    prompt: Optional[str] = "Once upon a time"
-    max_tokens: Optional[int] = 100
+    runs: int = 3
+    prompt: Optional[str] = (
+        "Write a detailed explanation of how neural networks learn through backpropagation. "
+        "Include the mathematical concepts and provide examples."
+    )
+    max_tokens: Optional[int] = 500
+    temperature: Optional[float] = 0.7
 
 class SettingsUpdateRequest(BaseModel):
     models_dir: str
@@ -261,6 +266,8 @@ async def start_server_by_id(server_id: str):
         result = await server_manager.start_server(server_id)
         return {"success": True, "data": result}
     except Exception as e:
+        print(f"[Error] Failed to start server: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/server/stop")
@@ -272,6 +279,24 @@ async def stop_server(server_id: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.post("/api/servers/{server_id}/benchmark")
+async def run_server_benchmark(server_id: str, request: PerformanceTestRequest):
+    """Run performance benchmark against a running server"""
+    if not server_manager.is_running(server_id):
+        raise HTTPException(status_code=400, detail="Server must be running to run benchmark")
+
+    try:
+        data = await server_manager.run_performance_test(
+            server_id=server_id,
+            runs=request.runs,
+            prompt=request.prompt,
+            max_tokens=request.max_tokens or 500,
+            temperature=request.temperature if request.temperature is not None else 0.7
+        )
+        return {"success": True, "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/server/status")
 async def get_server_status():
     """Get current server status"""
@@ -309,36 +334,46 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail=f"Server {request.server_id} is not running")
     
     try:
+        response = await server_manager.chat(
+            server_id=request.server_id,
+            message=request.message,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature
+        )
+
         if request.stream:
-            return StreamingResponse(
-                server_manager.chat_stream(
-                    server_id=request.server_id,
-                    message=request.message,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature
-                ),
-                media_type="text/event-stream"
-            )
-        else:
-            response = await server_manager.chat(
-                server_id=request.server_id,
-                message=request.message,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature
-            )
-            return {"success": True, "data": response}
+            async def event_stream():
+                content = ""
+                try:
+                    choices = response.get("choices", [])
+                    if choices:
+                        choice = choices[0]
+                        content = (
+                            choice.get("message", {}).get("content") or
+                            choice.get("text") or
+                            ""
+                        )
+                    yield f"data: {json.dumps({'content': content})}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+        return {"success": True, "data": response}
     except Exception as e:
         print(f"Chat Error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
+@app.websocket("/ws/chat/{server_id}")
+async def websocket_chat(websocket: WebSocket, server_id: str):
     """WebSocket endpoint for real-time chat"""
     await websocket.accept()
     
-    if not server_manager.is_running():
+    if not server_manager.is_running(server_id):
         await websocket.send_json({
-            "error": "Server is not running"
+            "error": f"Server {server_id} is not running"
         })
         await websocket.close()
         return
@@ -349,7 +384,8 @@ async def websocket_chat(websocket: WebSocket):
             message_data = json.loads(data)
             
             async for chunk in server_manager.chat_stream(
-                message_data.get("message", ""),
+                server_id=server_id,
+                message=message_data.get("message", ""),
                 max_tokens=message_data.get("max_tokens", 512),
                 temperature=message_data.get("temperature")
             ):

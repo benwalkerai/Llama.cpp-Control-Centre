@@ -10,6 +10,7 @@ import threading
 import sys
 import subprocess
 import aiohttp
+import time
 from collections import deque
 from typing import Optional, Dict, AsyncGenerator, List
 from datetime import datetime
@@ -194,9 +195,14 @@ class ServerManager:
                     for line in iter(proc.stdout.readline, ""):
                         if sid not in self.per_server_logs:
                             break
+                        
+                        # Filter out noisy health check/status logs from uvicorn in the subprocess
+                        if self._should_filter_console_line(line):
+                            continue
+                            
                         self.per_server_logs[sid].append(line.strip())
-                except:
-                    pass
+                except Exception as e:
+                    self._log(f"Error reading stdout from server {sid}: {e}")
 
             threading.Thread(target=log_reader, args=(process, server_id), daemon=True).start()
             
@@ -282,14 +288,18 @@ class ServerManager:
         port = config.get("port", 8000)
         url = f"http://{host}:{port}/v1/chat/completions"
         
+        model_path = config.get("model_path") or config.get("model")
         payload = {
             "messages": [{"role": "user", "content": message}],
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": False
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if model_path:
+            payload["model"] = model_path
         
-        self._log(f"Proxying chat to {url}")
+        self._log(f"Proxying chat to {url} with payload: {json.dumps(payload)}")
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
@@ -316,14 +326,18 @@ class ServerManager:
         port = config.get("port", 8000)
         url = f"http://{host}:{port}/v1/chat/completions"
         
+        model_path = config.get("model_path") or config.get("model")
         payload = {
             "messages": [{"role": "user", "content": message}],
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": True
         }
-        
-        self._log(f"Proxying stream chat to {url}")
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if model_path:
+            payload["model"] = model_path
+            
+        self._log(f"Proxying stream chat to {url} with payload: {json.dumps(payload)}")
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -375,23 +389,34 @@ class ServerManager:
         
         config["is_ready"] = False
         
-        # Standard endpoints to check
-        endpoints = ["/health", "/v1/models", "/"]
-        
         try:
-            # Short timeout for local checks
-            timeout = aiohttp.ClientTimeout(total=0.5)
+            timeout = aiohttp.ClientTimeout(total=2.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Try endpoints until one works
-                for ep in endpoints:
+                # Require /v1/models to return at least one model before marking ready
+                try:
+                    async with session.get(f"http://{host}:{port}/v1/models") as resp:
+                        if resp.status == 200:
+                            try:
+                                payload = await resp.json()
+                                models = payload.get("data", [])
+                                if isinstance(models, list) and len(models) > 0:
+                                    config["is_ready"] = True
+                                    return config
+                            except Exception:
+                                # JSON parsing failed – treat as not ready yet
+                                pass
+                except Exception:
+                    pass
+                
+                # Fallback checks keep server visible but still marked initializing
+                for ep in ("/", "/health"):
                     try:
                         async with session.get(f"http://{host}:{port}{ep}") as resp:
                             if resp.status == 200:
-                                config["is_ready"] = True
                                 break
-                    except:
+                    except Exception:
                         continue
-        except:
+        except Exception:
             pass
             
         return config
@@ -413,4 +438,95 @@ class ServerManager:
             del self.active_configs[server_id]
         if server_id in self.per_server_logs:
             del self.per_server_logs[server_id]
+
+    def _should_filter_console_line(self, line: str) -> bool:
+        """Filter out uvicorn/access logs so console shows llama.cpp output only"""
+        if not line or not line.strip():
+            return True
+        
+        lowered = line.lower()
+        http_methods = ('"get ', '"post ', '"put ', '"delete ', '"head ', '"options ')
+        if 'http/1.1"' in lowered:
+            if any(method in lowered for method in http_methods):
+                return True
+        
+        if lowered.startswith("info:     127.") or lowered.startswith("info:     ::1"):
+            return True
+        
+        if "uvicorn.access" in lowered or "uvicorn.error" in lowered:
+            return True
+        
+        # Filter server lifecycle noise
+        lifecycle_phrases = (
+            "application startup complete",
+            "application shutdown complete",
+            "waiting for application shutdown",
+            "shutting down",
+            "started server process",
+            "finished server process",
+            "stopping reloader process",
+        )
+        if any(phrase in lowered for phrase in lifecycle_phrases):
+            return True
+        
+        return False
+
+    async def run_performance_test(
+        self,
+        server_id: str,
+        runs: int = 3,
+        prompt: str = "Write a detailed explanation of how neural networks learn through backpropagation. Include the mathematical concepts and provide examples.",
+        max_tokens: int = 500,
+        temperature: float = 0.7
+    ) -> Dict:
+        """Run repeated chat calls against a running server to measure performance."""
+
+        if server_id not in self.active_configs or not self.is_running(server_id):
+            raise Exception("Server must be running to run the benchmark.")
+
+        results = []
+        total_tokens = 0
+        total_time = 0.0
+
+        for run in range(1, runs + 1):
+            start = time.perf_counter()
+            response = await self.chat(
+                server_id=server_id,
+                message=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            elapsed = time.perf_counter() - start
+
+            usage = response.get("usage", {}) or {}
+            completion_tokens = usage.get("completion_tokens", 0)
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            tokens_per_second = completion_tokens / elapsed if elapsed > 0 else 0
+
+            result = {
+                "run": run,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_time_seconds": round(elapsed, 2),
+                "tokens_per_second": round(tokens_per_second, 2)
+            }
+            results.append(result)
+            total_tokens += completion_tokens
+            total_time += elapsed
+
+        avg_tokens = total_tokens / runs if runs else 0
+        avg_time = total_time / runs if runs else 0
+        avg_tps = avg_tokens / avg_time if avg_time > 0 else 0
+
+        summary = {
+            "runs": runs,
+            "avg_completion_tokens": round(avg_tokens, 2),
+            "avg_time_seconds": round(avg_time, 2),
+            "avg_tokens_per_second": round(avg_tps, 2)
+        }
+
+        return {
+            "results": results,
+            "summary": summary
+        }
 

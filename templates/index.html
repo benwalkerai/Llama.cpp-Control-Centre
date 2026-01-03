@@ -80,13 +80,6 @@
                                     <div class="info-value" id="gpuStatus">-</div>
                                 </div>
                             </div>
-                            <div class="info-box">
-                                <div class="info-icon">🔥</div>
-                                <div class="info-content">
-                                    <div class="info-label">VRAM</div>
-                                    <div class="info-value" id="vram">-</div>
-                                </div>
-                            </div>
                         </div>
                         <div id="recommendations" class="recommendations"></div>
                     </div>
@@ -167,11 +160,11 @@
                     <table class="data-table" id="serversTable">
                         <thead>
                             <tr>
-                                <th style="width: 30%">Name</th>
-                                <th style="width: 30%">Model</th>
-                                <th style="width: 10%">Port</th>
-                                <th style="width: 15%">Status</th>
-                                <th style="width: 15%">Actions</th>
+                                <th style="width: 22%">Name</th>
+                                <th style="width: 22%">Model</th>
+                                <th style="width: 12%">Port</th>
+                                <th style="width: 18%">Status</th>
+                                <th style="width: 26%">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="serversList">
@@ -247,20 +240,17 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
-                <button class="btn btn-primary" onclick="saveSettings()">
-                    <span class="btn-icon">💾</span>
-                    Save Settings
-                </button>
+                <button class="btn btn-primary" onclick="saveSettings()">Save</button>
             </div>
         </div>
     </div>
 
-    <!-- Create Server Modal -->
+    <!-- Create/Edit Server Modal -->
     <div class="modal-overlay" id="createServerModal" onclick="closeCreateServerOnOverlay(event)">
         <div class="modal-window glass">
             <div class="modal-header">
                 <h2 class="card-title">
-                    <span class="card-icon">✨</span>
+                    <span class="card-icon">🖥️</span>
                     <span id="serverModalTitle">Create New Server</span>
                 </h2>
                 <button class="btn-close" onclick="closeCreateServerModal()">×</button>
@@ -274,7 +264,7 @@
 
                     <div class="form-group" style="grid-column: span 2;">
                         <label for="serverModel">Model</label>
-                        <select id="serverModel" class="input">
+                        <select id="serverModel" class="input" onchange="applyParameterRecommendations()">
                             <option value="" disabled selected>Select a model...</option>
                         </select>
                     </div>
@@ -326,6 +316,41 @@
                     <span class="btn-icon">✅</span>
                     <span id="saveServerBtnText">Create</span>
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Benchmark Modal -->
+    <div class="modal-overlay" id="benchmarkModal" onclick="closeBenchmarkOnOverlay(event)">
+        <div class="modal-window glass" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2 class="card-title">
+                    <span class="card-icon">⚡</span>
+                    <span id="benchmarkModalTitle">Performance Test</span>
+                </h2>
+                <button class="btn-close" onclick="closeBenchmarkModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="benchmarkSummary" class="benchmark-summary">
+                    <div class="benchmark-loading">Running performance test... This may take up to a minute.</div>
+                </div>
+                <table class="data-table" id="benchmarkResultsTable" style="margin-top: 1rem;">
+                    <thead>
+                        <tr>
+                            <th>Run</th>
+                            <th>Tokens</th>
+                            <th>Time (s)</th>
+                            <th>Tokens/s</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="benchmarkResultsBody">
+                        <tr><td colspan="5" style="text-align:center;">Collecting metrics...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="closeBenchmarkModal()">Close</button>
             </div>
         </div>
     </div>

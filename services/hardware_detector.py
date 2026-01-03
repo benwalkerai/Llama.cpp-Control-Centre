@@ -43,13 +43,14 @@ class HardwareDetector:
             "available": False,
             "name": None,
             "vram_gb": None,
-            "cuda_available": False
+            "cuda_available": False,
+            "cuda_version": None
         }
         
         try:
             # Try to detect NVIDIA GPU using nvidia-smi
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
+                ['nvidia-smi', '--query-gpu=name,memory.total,driver_version', '--format=csv,noheader'],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -63,6 +64,154 @@ class HardwareDetector:
                     gpu_info["name"] = parts[0].strip()
                     gpu_info["vram_gb"] = round(float(parts[1].strip().split()[0]) / 1024, 2)
                     gpu_info["cuda_available"] = True
+                    gpu_info["driver_version"] = parts[2].strip() if len(parts) > 2 else None
+                    
+                    # Try to get CUDA version from nvcc
+                    try:
+                        nvcc_result = subprocess.run(
+                            ['nvcc', '--version'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if nvcc_result.returncode == 0:
+                            # Parse CUDA version from nvcc output
+                            import re
+                            version_match = re.search(r'release (\d+\.\d+)', nvcc_result.stderr.lower())
+                            if version_match:
+                                gpu_info["cuda_version"] = version_match.group(1)
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                        pass
+                    
+                    # If nvcc not available, try to infer from driver version
+                    if not gpu_info["cuda_version"] and gpu_info["driver_version"]:
+                        # Map driver versions to CUDA versions (approximate)
+                        driver_to_cuda = {
+                            # Latest drivers
+                            "546.01": "12.3",
+                            "546.00": "12.3",
+                            "545.23": "12.3",
+                            "545.01": "12.3",
+                            "535.54": "12.2",
+                            "535.104": "12.2",
+                            "535.82": "12.2",
+                            "535.61": "12.2",
+                            "535.54": "12.2",
+                            "535.43": "12.2",
+                            "535.34": "12.2",
+                            "535.31": "12.2",
+                            "535.30": "12.2",
+                            "535.28": "12.2",
+                            "535.27": "12.2",
+                            "535.26": "12.2",
+                            "535.25": "12.2",
+                            "535.24": "12.2",
+                            "535.23": "12.2",
+                            "535.22": "12.2",
+                            "535.21": "12.2",
+                            "535.20": "12.2",
+                            "535.17": "12.2",
+                            "535.16": "12.2",
+                            "535.15": "12.2",
+                            "535.14": "12.2",
+                            "535.13": "12.2",
+                            "535.12": "12.2",
+                            "535.11": "12.2",
+                            "535.10": "12.2",
+                            "535.09": "12.2",
+                            "535.08": "12.2",
+                            "535.07": "12.2",
+                            "535.06": "12.2",
+                            "535.05": "12.2",
+                            "535.04": "12.2",
+                            "535.03": "12.2",
+                            "535.02": "12.2",
+                            "535.01": "12.2",
+                            "530.30": "12.1",
+                            "530.86": "12.1",
+                            "530.41": "12.1",
+                            "530.30": "12.1",
+                            "525.60": "12.0",
+                            "525.85": "12.0",
+                            "525.60": "12.0",
+                            "525.47": "12.0",
+                            "525.31": "12.0",
+                            "525.30": "12.0",
+                            "525.16": "12.0",
+                            "525.15": "12.0",
+                            "525.14": "12.0",
+                            "525.13": "12.0",
+                            "525.12": "12.0",
+                            "525.11": "12.0",
+                            "525.10": "12.0",
+                            "525.09": "12.0",
+                            "525.08": "12.0",
+                            "525.07": "12.0",
+                            "525.06": "12.0",
+                            "515.65": "11.8",
+                            "515.76": "11.8",
+                            "515.65": "11.8",
+                            "515.57": "11.8",
+                            "515.52": "11.8",
+                            "515.49": "11.8",
+                            "515.48": "11.8",
+                            "515.47": "11.8",
+                            "515.43": "11.8",
+                            "510.47": "11.7",
+                            "510.108": "11.7",
+                            "510.86": "11.7",
+                            "510.73": "11.7",
+                            "510.54": "11.7",
+                            "510.47": "11.7",
+                            "510.39": "11.7",
+                            "470.57": "11.4",
+                            "470.223": "11.4",
+                            "470.161": "11.4",
+                            "470.141": "11.4",
+                            "470.129": "11.4",
+                            "470.103": "11.4",
+                            "470.86": "11.4",
+                            "470.82": "11.4",
+                            "470.81": "11.4",
+                            "470.63": "11.4",
+                            "470.57": "11.4",
+                            "460.27": "11.2",
+                            "460.89": "11.2",
+                            "460.82": "11.2",
+                            "460.79": "11.2",
+                            "470.27": "11.2",
+                            "455.28": "11.1",
+                            "455.45": "11.1",
+                            "455.38": "11.1",
+                            "455.32": "11.1",
+                            "455.28": "11.1",
+                            "450.36": "11.0"
+                        }
+                        
+                        # Try to match exact driver version first
+                        exact_match = driver_to_cuda.get(gpu_info["driver_version"])
+                        if exact_match:
+                            gpu_info["cuda_version"] = exact_match
+                        else:
+                            # Try prefix matching
+                            driver_prefix = '.'.join(gpu_info["driver_version"].split('.')[:2])
+                            gpu_info["cuda_version"] = driver_to_cuda.get(driver_prefix, "Unknown")
+                            
+                            # If still unknown, try to estimate based on version number
+                            if gpu_info["cuda_version"] == "Unknown":
+                                driver_major = int(gpu_info["driver_version"].split('.')[0])
+                                if driver_major >= 535:
+                                    gpu_info["cuda_version"] = "12.2+"
+                                elif driver_major >= 530:
+                                    gpu_info["cuda_version"] = "12.1+"
+                                elif driver_major >= 525:
+                                    gpu_info["cuda_version"] = "12.0+"
+                                elif driver_major >= 515:
+                                    gpu_info["cuda_version"] = "11.8+"
+                                elif driver_major >= 470:
+                                    gpu_info["cuda_version"] = "11.4+"
+                                else:
+                                    gpu_info["cuda_version"] = f"~11.{min(driver_major - 459, 0)}"
                     
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             # Try alternative method using torch if available
@@ -75,6 +224,7 @@ class HardwareDetector:
                     gpu_info["vram_gb"] = round(
                         torch.cuda.get_device_properties(0).total_memory / (1024**3), 2
                     )
+                    gpu_info["cuda_version"] = torch.version.cuda
             except ImportError:
                 pass
         

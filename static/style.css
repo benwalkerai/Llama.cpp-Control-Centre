@@ -485,7 +485,7 @@ label {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    max-height: 350px;
+    max-height: 200px;
     overflow-y: auto;
     padding-right: 0.5rem;
 }
@@ -776,32 +776,64 @@ label {
 }
 
 .modal-footer {
-    padding: 1.5rem;
+    padding: 1rem 1.5rem;
     border-top: 1px solid var(--border);
     display: flex;
+    gap: 0.5rem;
     justify-content: flex-end;
-    gap: 1rem;
+    align-items: center;
 }
 
 .btn-close {
     background: none;
     border: none;
-    color: var(--text-muted);
     font-size: 1.5rem;
+    color: var(--text-muted);
     cursor: pointer;
-    line-height: 1;
     padding: 0.25rem;
-    transition: color 0.2s;
+    line-height: 1;
+    border-radius: var(--radius-small);
+    transition: all 0.2s ease;
 }
 
 .btn-close:hover {
     color: var(--text);
+    background: var(--bg-secondary);
 }
 
+/* ===== Benchmark Modal Styles ===== */
+.benchmark-summary {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
 
-/* ===== Data Tables ===== */
-.table-container {
-    overflow-x: auto;
+.benchmark-loading {
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 2rem;
+}
+
+/* ===== Console Styles ===== */
+.console-box {
+    background: #000;
+    color: #00ff00;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    padding: 1rem;
+    border-radius: var(--radius);
+    height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.console-placeholder {
+    color: #666;
+    font-style: italic;
 }
 
 .data-table {
@@ -815,27 +847,27 @@ label {
 
 /* Distribute column widths */
 .data-table th:nth-child(1) {
-    width: 30%;
+    width: 22%;
 }
 
 /* Name */
 .data-table th:nth-child(2) {
-    width: 30%;
+    width: 22%;
 }
 
 /* Model */
 .data-table th:nth-child(3) {
-    width: 10%;
+    width: 12%;
 }
 
 /* Port */
 .data-table th:nth-child(4) {
-    width: 15%;
+    width: 18%;
 }
 
 /* Status */
 .data-table th:nth-child(5) {
-    width: 15%;
+    width: 26%;
 }
 
 /* Actions */

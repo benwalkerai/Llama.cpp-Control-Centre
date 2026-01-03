@@ -77,12 +77,16 @@ async function loadHardwareInfo() {
         // Update GPU
         const gpu = info.gpu;
         if (gpu.available) {
-            document.getElementById('gpuStatus').textContent = gpu.name || 'Detected';
-            document.getElementById('vram').textContent =
-                gpu.vram_gb ? `${gpu.vram_gb} GB` : 'N/A';
+            let gpuText = gpu.name || 'Detected';
+            if (gpu.cuda_version) {
+                gpuText += ` (CUDA ${gpu.cuda_version})`;
+            }
+            if (gpu.vram_gb) {
+                gpuText += ` - ${gpu.vram_gb} GB VRAM`;
+            }
+            document.getElementById('gpuStatus').textContent = gpuText;
         } else {
             document.getElementById('gpuStatus').textContent = 'Not Detected';
-            document.getElementById('vram').textContent = 'N/A';
         }
 
         // Load recommendations
@@ -375,6 +379,90 @@ async function openCreateServerModal(isEdit = false, serverId = null) {
         document.getElementById('serverRepeat').value = '1.1';
 
         document.getElementById('createServerModal').classList.add('active');
+        
+        // Load and apply recommendations for new server
+        await applyParameterRecommendations();
+    }
+}
+
+// Apply parameter recommendations based on selected model
+async function applyParameterRecommendations() {
+    const modelSelect = document.getElementById('serverModel');
+    const selectedModel = modelSelect.value;
+    
+    console.log('applyParameterRecommendations called, selectedModel:', selectedModel);
+    
+    if (!selectedModel) {
+        console.log('No model selected, returning');
+        return;
+    }
+    
+    try {
+        // Get model size estimate from filename
+        const filename = selectedModel.split(/[/\\]/).pop().toLowerCase();
+        console.log('Filename:', filename);
+        
+        let modelSizeGB = null;
+        
+        // Extract size from filename patterns
+        if (filename.includes('2b') || filename.includes('tiny')) modelSizeGB = 1.5;
+        else if (filename.includes('7b')) modelSizeGB = 4.5; // Estimated for Q4_K_M
+        else if (filename.includes('8b')) modelSizeGB = 5;
+        else if (filename.includes('14b')) modelSizeGB = 8.5;
+        else if (filename.includes('13b')) modelSizeGB = 8.5;
+        else if (filename.includes('34b')) modelSizeGB = 20;
+        else if (filename.includes('70b')) modelSizeGB = 40;
+        
+        console.log('Detected model size:', modelSizeGB, 'GB');
+        
+        // Get recommendations from backend
+        const apiUrl = `/hardware/recommendations?model_size_gb=${modelSizeGB}`;
+        console.log('Calling API:', apiUrl);
+        
+        const result = await apiCall(apiUrl);
+        console.log('API result:', result);
+        
+        const rec = result.data;
+        console.log('Recommendations:', rec);
+        
+        // Apply recommendations with user confirmation
+        if (rec && rec.reasoning && rec.reasoning.length > 0) {
+            const reasoningText = rec.reasoning.join('\n');
+            console.log('Reasoning text:', reasoningText);
+            
+            const applyRec = confirm(
+                `Recommended parameters for this model:\n\n${reasoningText}\n\nApply these recommendations?`
+            );
+            
+            console.log('User accepted recommendations:', applyRec);
+            
+            if (applyRec) {
+                // Apply recommendations to form fields
+                const ctxField = document.getElementById('serverCtx');
+                const gpuField = document.getElementById('serverGpu');
+                const threadsField = document.getElementById('serverThreads');
+                
+                ctxField.value = rec.n_ctx;
+                gpuField.value = rec.n_gpu_layers;
+                threadsField.value = rec.n_threads;
+                
+                console.log('Applied recommendations:', {
+                    n_ctx: rec.n_ctx,
+                    n_gpu_layers: rec.n_gpu_layers,
+                    n_threads: rec.n_threads,
+                    ctxFieldValue: ctxField.value,
+                    gpuFieldValue: gpuField.value,
+                    threadsFieldValue: threadsField.value
+                });
+                
+                // Show success message
+                showAlert('Parameters applied successfully', 'success');
+            }
+        } else {
+            console.log('No recommendations found or empty reasoning array');
+        }
+    } catch (error) {
+        console.error('Failed to load recommendations:', error);
     }
 }
 
@@ -416,6 +504,7 @@ async function loadServers() {
             const isRunning = !!runningServer;
             const isReady = runningServer ? runningServer.is_ready : false;
             const modelName = server.model_path.split(/[/\\]/).pop();
+            const encodedName = encodeURIComponent(server.name || "Server");
 
             let statusBadge = '';
             if (isRunning) {
@@ -437,16 +526,19 @@ async function loadServers() {
                 <td>
                     <div class="model-actions">
                         ${isRunning
-                    ? `<button class="btn btn-small btn-danger" onclick="stopServer('${server.id}')">⏹️ Stop</button>`
-                    : `<button class="btn btn-small btn-success" onclick="startServer('${server.id}')">▶️ Start</button>`
-                }
-                        <button class="btn btn-small btn-ghost" onclick="openConsoleModal('${server.id}', '${server.name}')" title="View Console">📟</button>
-                        <button class="btn btn-small btn-ghost" onclick="openCreateServerModal(true, '${server.id}')" ${isRunning ? 'disabled' : ''}>✏️</button>
+                            ? `<button class="btn btn-small btn-danger" onclick="stopServer('${server.id}')">⏹️ Stop</button>`
+                            : `<button class="btn btn-small btn-success" onclick="startServer('${server.id}')">▶️ Start</button>`
+                        }
+                        <button class="btn btn-small btn-ghost console-btn" data-server-id="${server.id}" data-server-name="${encodedName}" title="View Console">📟</button>
+                        <button class="btn btn-small btn-warning benchmark-btn" data-server-id="${server.id}" data-server-name="${encodedName}" ${isRunning ? '' : 'disabled'} title="Run Performance Test">⚡</button>
+                        <button class="btn btn-small btn-ghost edit-btn" data-server-id="${server.id}">✏️</button>
                         <button class="btn btn-small btn-ghost" onclick="deleteServer('${server.id}')" ${isRunning ? 'disabled' : ''}>🗑️</button>
                     </div>
                 </td>
             </tr>
         `}).join('');
+
+        attachServerRowHandlers();
 
     } catch (error) {
         console.error('Failed to load servers:', error);
@@ -694,7 +786,6 @@ async function sendMessage() {
     // Add Assistant Placeholder
     const assistantMsgId = addChatMessage('assistant', '...');
     const assistantMsgContent = document.querySelector(`#${assistantMsgId} .message-content`);
-    let fullResponse = '';
 
     try {
         const response = await fetch('/api/chat', {
@@ -707,34 +798,41 @@ async function sendMessage() {
             })
         });
 
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.detail || 'Chat request failed');
+        }
+
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        let buffer = '';
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
             for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.content) {
-                            if (fullResponse === '') assistantMsgContent.textContent = ''; // Clear ...
-                            fullResponse += data.content;
-                            assistantMsgContent.textContent = fullResponse;
+                if (!line.startsWith('data:')) continue;
+                const payload = line.slice(5).trim();
+                if (payload === '[DONE]') {
+                    buffer = '';
+                    break;
+                }
 
-                            // Scroll to bottom
-                            const container = document.getElementById('chatMessages');
-                            container.scrollTop = container.scrollHeight;
-                        } else if (data.error) {
-                            assistantMsgContent.textContent += ` [Error: ${data.error}]`;
-                        }
-                    } catch (e) {
-                        // ignore parse errors for keep-alive or malformed chunks
+                try {
+                    const data = JSON.parse(payload);
+                    if (data.content) {
+                        if (assistantMsgContent.textContent === '...') assistantMsgContent.textContent = '';
+                        assistantMsgContent.textContent += data.content;
+                    } else if (data.error) {
+                        assistantMsgContent.textContent = `Error: ${data.error}`;
                     }
+                } catch (e) {
+                    // ignore malformed chunks
                 }
             }
         }
@@ -763,7 +861,7 @@ function addChatMessage(role, content) {
     msgDiv.className = `message chat-message ${role}`;
     msgDiv.id = msgId;
     msgDiv.innerHTML = `
-        <div class="chat-role">${role === 'user' ? 'You' : 'Llama'}</div>
+        <div class="chat-role">${role === 'user' ? 'You' : 'Model'}</div>
         <div class="message-content">${role === 'assistant' && content === '...' ? '<span class="typing-dots">...</span>' : content}</div>
     `;
 
@@ -771,6 +869,111 @@ function addChatMessage(role, content) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
     return msgId;
+}
+
+// ===== Benchmark Functions =====
+async function runBenchmark(serverId, serverName = '') {
+    if (!serverId) return;
+
+    const displayName = serverName || 'Selected Server';
+    openBenchmarkModal(displayName, null);
+    showAlert('Running performance test...', 'info');
+
+    try {
+        const response = await apiCall(`/servers/${serverId}/benchmark`, {
+            method: 'POST',
+            body: JSON.stringify({ runs: 3 })
+        });
+
+        openBenchmarkModal(displayName, response.data);
+        showAlert('Benchmark completed', 'success');
+    } catch (error) {
+        showBenchmarkError(error.message || 'Benchmark failed');
+        showAlert(error.message, 'error');
+    }
+}
+
+function openBenchmarkModal(serverName, benchmarkData) {
+    const modal = document.getElementById('benchmarkModal');
+    document.getElementById('benchmarkModalTitle').textContent = `Performance Test • ${serverName}`;
+    const summaryEl = document.getElementById('benchmarkSummary');
+    const tableBody = document.getElementById('benchmarkResultsBody');
+
+    if (!benchmarkData) {
+        summaryEl.innerHTML = '<div class="benchmark-loading">Running performance test... This may take up to a minute.</div>';
+        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Collecting metrics...</td></tr>';
+    } else {
+        const summary = benchmarkData.summary || {};
+        summaryEl.innerHTML = `
+            <div><strong>Runs:</strong> ${summary.runs ?? '—'}</div>
+            <div><strong>Avg Tokens:</strong> ${summary.avg_completion_tokens ?? '—'}</div>
+            <div><strong>Avg Time:</strong> ${summary.avg_time_seconds ?? '—'}s</div>
+            <div><strong>Avg Tokens/sec:</strong> ${summary.avg_tokens_per_second ?? '—'}</div>
+        `;
+
+        const rows = (benchmarkData.results || []).map(result => `
+            <tr>
+                <td>${result.run}</td>
+                <td>${result.prompt_tokens}</td>
+                <td>${result.completion_tokens}</td>
+                <td>${result.total_time_seconds}s</td>
+                <td>${result.tokens_per_second}</td>
+            </tr>
+        `).join('');
+
+        tableBody.innerHTML = rows || '<tr><td colspan="5" style="text-align:center;">No results</td></tr>';
+    }
+
+    modal.classList.add('active');
+}
+
+function showBenchmarkError(message) {
+    const summaryEl = document.getElementById('benchmarkSummary');
+    const tableBody = document.getElementById('benchmarkResultsBody');
+    summaryEl.innerHTML = `<div class="benchmark-error">${message}</div>`;
+    tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Benchmark failed.</td></tr>';
+    document.getElementById('benchmarkModal').classList.add('active');
+}
+
+function closeBenchmarkModal() {
+    const modal = document.getElementById('benchmarkModal');
+    modal.classList.remove('active');
+}
+
+function closeBenchmarkOnOverlay(event) {
+    if (event.target.id === 'benchmarkModal') {
+        closeBenchmarkModal();
+    }
+}
+
+// ===== Helpers =====
+function attachServerRowHandlers() {
+    const consoleButtons = document.querySelectorAll('.console-btn');
+    consoleButtons.forEach(btn => {
+        btn.onclick = () => {
+            const serverId = btn.dataset.serverId;
+            const serverName = decodeURIComponent(btn.dataset.serverName || 'Server');
+            openConsoleModal(serverId, serverName);
+        };
+    });
+
+    const benchmarkButtons = document.querySelectorAll('.benchmark-btn');
+    benchmarkButtons.forEach(btn => {
+        btn.onclick = () => {
+            if (btn.disabled) return;
+            const serverId = btn.dataset.serverId;
+            const serverName = decodeURIComponent(btn.dataset.serverName || 'Server');
+            runBenchmark(serverId, serverName);
+        };
+    });
+
+    const editButtons = document.querySelectorAll('.edit-btn');
+    editButtons.forEach(btn => {
+        btn.onclick = () => {
+            const serverId = btn.dataset.serverId;
+            openCreateServerModal(true, serverId);
+        };
+    });
 }
 
 // ===== Settings Functions =====
@@ -838,6 +1041,72 @@ async function saveSettings() {
 
     } catch (error) {
         console.error('Failed to save settings:', error);
+    }
+}
+
+// ===== Console Logic =====
+function openConsoleModal(serverId, serverName) {
+    activeConsoleServerId = serverId;
+    document.getElementById('consoleTitle').textContent = `Console: ${serverName}`;
+    const modal = document.getElementById('consoleModal');
+    modal.classList.add('active');
+
+    // Clear previous logs and show placeholder
+    const output = document.getElementById('consoleOutput');
+    output.innerHTML = '<div class="console-placeholder">Connecting to log stream...</div>';
+
+    // Initial load
+    loadSpecificServerLogs(serverId);
+
+    // Set up polling
+    if (consoleInterval) clearInterval(consoleInterval);
+    consoleInterval = setInterval(() => {
+        if (activeConsoleServerId) {
+            loadSpecificServerLogs(activeConsoleServerId);
+        }
+    }, 2000);
+}
+
+function closeConsoleModal() {
+    const modal = document.getElementById('consoleModal');
+    modal.classList.remove('active');
+    activeConsoleServerId = null;
+    if (consoleInterval) {
+        clearInterval(consoleInterval);
+        consoleInterval = null;
+    }
+}
+
+function closeConsoleOnOverlay(event) {
+    if (event.target.id === 'consoleModal') {
+        closeConsoleModal();
+    }
+}
+
+function clearConsole() {
+    const output = document.getElementById('consoleOutput');
+    output.innerHTML = '<div class="system-message">View cleared locally.</div>';
+}
+
+async function loadSpecificServerLogs(serverId) {
+    try {
+        const result = await apiCall(`/server/logs/${serverId}?lines=100`);
+        const logs = result.data;
+        const output = document.getElementById('consoleOutput');
+
+        if (logs && logs.length > 0) {
+            output.innerHTML = logs.map(line => {
+                // Dim common boilerplate or format specifically if needed
+                return `<div class="console-line">${line}</div>`;
+            }).join('');
+
+            // Auto-scroll
+            output.scrollTop = output.scrollHeight;
+        } else {
+            output.innerHTML = '<div class="console-placeholder">Waiting for logs...</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load specific server logs:', error);
     }
 }
 
