@@ -79,6 +79,24 @@ Based on your hardware and selected model, the system recommends:
 
 ## Usage
 
+### ⚙️ Settings Configuration
+Before using the application, configure your settings:
+
+1. **Click Settings button** (gear icon ⚙️ in top-right)
+2. **Set Models Directory**: 
+   - Enter absolute path to your models folder (e.g., `D:\Models` or `/home/user/models`)
+   - This is where downloaded models will be stored
+3. **Add HuggingFace Token** (Optional):
+   - Get your token from [HuggingFace Settings](https://huggingface.co/settings/tokens)
+   - Required for private/restricted models
+   - Click "Create new token" if needed
+4. **Click Save** to apply settings
+
+**Important Settings:**
+- **Models Directory**: Must be absolute path where you want to store GGUF model files
+- **HF Token**: Only needed for accessing private repositories or gated models
+- **Auto-refresh**: Settings are saved automatically and persist between sessions
+
 ### Creating a Server
 1. Click "Create New Server"
 2. Enter a server name
