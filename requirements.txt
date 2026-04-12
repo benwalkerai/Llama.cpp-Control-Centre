@@ -27,4 +27,4 @@ pydantic==2.5.3
 # torch==2.1.2
 
 # Optional: For better JSON handling
-orjson==3.9.12
+orjson==3.11.6
